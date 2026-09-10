@@ -1,0 +1,711 @@
+import React, { useEffect, useState } from 'react';
+import { useParams, Link, useNavigate } from 'react-router-dom';
+import { repository } from '../../lib/repository';
+import { Booking, Payment, Property, Customer, SystemSettings } from '../../lib/repository/types';
+import { fmtDate, fmtINR } from '../../lib/utils/formatters';
+import { calculateBookingFinancials } from '../../lib/utils/financials';
+import AddPaymentModal from './AddPaymentModal';
+import {
+  generatePaymentReceiptPDF,
+  generateBookingInvoicePDF
+} from '../../lib/services/pdfGenerator';
+import {
+  ArrowLeft,
+  ArrowRight,
+  Calendar,
+  Building2,
+  User,
+  CreditCard,
+  Download,
+  Share2,
+  FileText,
+  CheckCircle2,
+  LogIn,
+  LogOut,
+  AlertCircle,
+  Plus,
+  ShieldCheck,
+  Mail,
+  Phone,
+  Clock,
+  Sparkles,
+  MessageSquare,
+  BedDouble,
+  ExternalLink,
+  Copy
+} from 'lucide-react';
+import { useToast } from '../../context/ToastContext';
+
+export default function BookingDetail() {
+  const { id } = useParams();
+  const navigate = useNavigate();
+  const { toast } = useToast();
+
+  const [booking, setBooking] = useState<Booking | null>(null);
+  const [payments, setPayments] = useState<Payment[]>([]);
+  const [settings, setSettings] = useState<SystemSettings | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [showPayModal, setShowPayModal] = useState(false);
+  const [sharingModal, setSharingModal] = useState<{
+    open: boolean;
+    channel: 'whatsapp' | 'email';
+    docName: string;
+  }>({
+    open: false,
+    channel: 'whatsapp',
+    docName: ''
+  });
+
+  useEffect(() => {
+    load();
+  }, [id]);
+
+  async function load() {
+    setLoading(true);
+    try {
+      const [bData, pData, sData, cData, propData] = await Promise.all([
+        repository.getBooking(id as string),
+        repository.getPayments(id as string),
+        repository.getSettings(),
+        repository.getCustomers(),
+        repository.getProperties()
+      ]);
+
+      if (bData) {
+        bData.customer = cData.find((c) => c.id === bData.customer_id);
+        bData.property = propData.find((p) => p.id === bData.property_id);
+      }
+      setBooking(bData);
+      setPayments(pData.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()));
+      setSettings(sData);
+    } catch (err) {
+      console.error(err);
+      toast.error('Failed to load reservation details');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // Financial calculations
+  const financials = booking ? calculateBookingFinancials(booking, payments) : null;
+
+  // Status updates
+  async function handleUpdateStayStatus(newStatus: 'Confirmed' | 'Checked In' | 'Checked Out') {
+    if (!booking) return;
+    try {
+      await repository.updateBooking(booking.id, { booking_status: newStatus });
+      setBooking({ ...booking, booking_status: newStatus });
+      toast.success('Stay Status Updated', `Booking is now marked as ${newStatus}.`);
+    } catch (err) {
+      toast.error('Could not update status');
+    }
+  }
+
+  // Invoice download
+  async function handleDownloadInvoice() {
+    if (!booking || !settings) return;
+    try {
+      const doc = await generateBookingInvoicePDF(
+        booking,
+        payments,
+        booking.property,
+        booking.customer,
+        settings,
+        financials?.netPaid || 0,
+        financials?.amountDue || 0
+      );
+      doc.save(`INV-${booking.booking_no}.pdf`);
+      toast.success('Invoice Generated', `INV-${booking.booking_no}.pdf downloaded.`);
+    } catch (err) {
+      console.error(err);
+      toast.error('Failed to generate Tax Invoice');
+    }
+  }
+
+  // Receipt download for individual payment
+  async function handleDownloadReceipt(p: Payment, index: number) {
+    if (!booking || !settings) return;
+    try {
+      let previouslyPaid = 0;
+      for (let i = 0; i < index; i++) {
+        if (payments[i].status === 'Completed' || payments[i].status === 'Recorded') {
+          previouslyPaid += payments[i].amount;
+        } else if (payments[i].status === 'Refunded') {
+          previouslyPaid -= payments[i].amount;
+        }
+      }
+      const balanceAfter = Math.max(
+        0,
+        booking.grand_total - (previouslyPaid + (p.status === 'Refunded' ? -p.amount : p.amount))
+      );
+      const doc = await generatePaymentReceiptPDF(
+        booking,
+        p,
+        booking.property,
+        booking.customer,
+        settings,
+        previouslyPaid,
+        balanceAfter
+      );
+      doc.save(`${p.payment_no}.pdf`);
+      toast.success('Receipt Downloaded', `${p.payment_no}.pdf saved.`);
+    } catch (err) {
+      console.error(err);
+      toast.error('Failed to generate receipt');
+    }
+  }
+
+  if (loading || !booking || !financials) {
+    return (
+      <div className="animate-pulse space-y-6 max-w-5xl mx-auto">
+        <div className="h-10 w-64 bg-stone-200 rounded-xl"></div>
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <div className="lg:col-span-2 h-96 bg-white rounded-2xl border border-[#D8D2C5]"></div>
+          <div className="h-96 bg-white rounded-2xl border border-[#D8D2C5]"></div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6 max-w-5xl mx-auto">
+      {/* Top Header & Breadcrumb */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <Link
+            to="/bookings"
+            className="p-2 rounded-xl border border-[#D8D2C5] bg-white text-[#5C6E6B] hover:text-[#1A2B28] hover:bg-[#FAF9F6] transition-colors"
+          >
+            <ArrowLeft size={18} />
+          </Link>
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-semibold uppercase tracking-wider text-[#0D5C56]">
+                Stay Confirmation
+              </span>
+              <span className="text-xs font-mono font-bold bg-[#E8F3F1] text-[#0D5C56] px-2 py-0.5 rounded-full border border-[#BDDFC9]">
+                {booking.booking_no}
+              </span>
+            </div>
+            <h1 className="text-2xl sm:text-3xl font-semibold text-[#1A2B28] mt-1 tracking-tight">
+              {booking.customer?.name}
+            </h1>
+          </div>
+        </div>
+
+        {/* Primary Contextual Action Button */}
+        <div className="flex items-center gap-2.5 flex-wrap">
+          {financials.amountDue > 0 ? (
+            <button
+              onClick={() => setShowPayModal(true)}
+              className="btn btn-primary text-xs sm:text-sm flex items-center gap-2 font-semibold shadow-sm"
+            >
+              <CreditCard size={16} />
+              <span>Record Payment ({fmtINR(financials.amountDue)} due)</span>
+            </button>
+          ) : (
+            <div className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-[#EBF6EF] text-[#276749] border border-[#BDDFC9] text-xs font-semibold">
+              <CheckCircle2 size={16} />
+              <span>Paid in Full</span>
+            </div>
+          )}
+
+          {/* Stay Status Progression */}
+          {booking.booking_status === 'Confirmed' && (
+            <button
+              onClick={() => handleUpdateStayStatus('Checked In')}
+              className="btn btn-outline text-xs sm:text-sm flex items-center gap-2 bg-white"
+            >
+              <LogIn size={15} className="text-[#0D5C56]" />
+              <span>Mark Checked In</span>
+            </button>
+          )}
+
+          {booking.booking_status === 'Checked In' && (
+            <button
+              onClick={() => handleUpdateStayStatus('Checked Out')}
+              className="btn btn-outline text-xs sm:text-sm flex items-center gap-2 bg-white text-[#C45532] border-[#F5DCAD] hover:bg-[#FAF0EB]"
+            >
+              <LogOut size={15} />
+              <span>Complete Check-out</span>
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Main Grid: 2 Cols Left + 1 Col Right */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Left 2 Cols: Stay & Financial Source of Truth */}
+        <div className="lg:col-span-2 space-y-6">
+          {/* Key Stay Details Card */}
+          <div className="card p-6 bg-white border-[#D8D2C5] space-y-5">
+            <div className="flex items-center justify-between border-b border-[#EAE5DC] pb-4">
+              <div>
+                <span className="text-xs font-semibold text-[#5C6E6B]">Property & Room</span>
+                <h3 className="text-lg font-bold text-[#1A2B28] mt-0.5">
+                  {booking.property?.name}
+                </h3>
+                <p className="text-xs text-[#5C6E6B]">{booking.property?.location}</p>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <span
+                  className={`badge ${
+                    booking.booking_status === 'Checked In'
+                      ? 'bg-[#EBF6EF] text-[#276749] border border-[#BDDFC9]'
+                      : booking.booking_status === 'Checked Out'
+                      ? 'bg-stone-100 text-stone-600 border border-stone-200'
+                      : 'bg-[#E8F3F1] text-[#0D5C56] border border-[#BDDFC9]'
+                  }`}
+                >
+                  {booking.booking_status}
+                </span>
+                <span
+                  className={`badge ${
+                    financials.paymentStatus === 'Paid'
+                      ? 'bg-[#EBF6EF] text-[#276749] border border-[#BDDFC9]'
+                      : financials.paymentStatus === 'Partially Paid'
+                      ? 'bg-[#FAF0EB] text-[#C45532] border border-[#F5DCAD]'
+                      : 'bg-rose-50 text-rose-700 border border-rose-200'
+                  }`}
+                >
+                  {financials.paymentStatus}
+                </span>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 text-xs">
+              <div className="p-3 rounded-xl bg-[#FAF9F6]">
+                <div className="text-[#5C6E6B]">Check-in</div>
+                <div className="font-semibold text-sm text-[#1A2B28] mt-1">
+                  {fmtDate(booking.check_in)}
+                </div>
+              </div>
+              <div className="p-3 rounded-xl bg-[#FAF9F6]">
+                <div className="text-[#5C6E6B]">Check-out</div>
+                <div className="font-semibold text-sm text-[#1A2B28] mt-1">
+                  {fmtDate(booking.check_out)}
+                </div>
+              </div>
+              <div className="p-3 rounded-xl bg-[#FAF9F6]">
+                <div className="text-[#5C6E6B]">Duration</div>
+                <div className="font-semibold text-sm text-[#1A2B28] mt-1">
+                  {booking.nights} {booking.nights === 1 ? 'night' : 'nights'}
+                </div>
+              </div>
+              <div className="p-3 rounded-xl bg-[#FAF9F6]">
+                <div className="text-[#5C6E6B]">Occupancy</div>
+                <div className="font-semibold text-sm text-[#1A2B28] mt-1">
+                  {booking.guests} {booking.guests === 1 ? 'guest' : 'guests'} ({booking.rooms} rm)
+                </div>
+              </div>
+              <div className="p-3 rounded-xl bg-[#E8F3F1] border border-[#BDDFC9]/70 col-span-2 sm:col-span-1">
+                <div className="text-[#0D5C56] font-semibold">Assigned Room</div>
+                <div className="font-bold text-sm text-[#1A2B28] mt-1 flex items-center gap-1.5">
+                  <BedDouble size={15} className="text-[#0D5C56]" />
+                  <span>{booking.room_number || 'Unassigned'}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Financial Breakdown Card */}
+          <div className="card p-6 bg-white border-[#D8D2C5] space-y-4">
+            <div className="flex items-center justify-between border-b border-[#EAE5DC] pb-3">
+              <h3 className="text-base font-semibold text-[#1A2B28]">Financial Breakdown</h3>
+              <span className="text-xs text-[#5C6E6B]">Tax Invoice Calculation</span>
+            </div>
+
+            <div className="space-y-2.5 text-xs">
+              <div className="flex justify-between text-[#5C6E6B]">
+                <span>Accommodation Charges ({booking.nights} nights @ {booking.room_type}):</span>
+                <span className="font-medium text-[#1A2B28]">{fmtINR(booking.base_amount)}</span>
+              </div>
+
+              {booking.tax_enabled && (
+                <div className="flex justify-between text-[#5C6E6B]">
+                  <span>GST ({booking.tax_rate}%):</span>
+                  <span className="font-medium text-[#1A2B28]">{fmtINR(booking.tax_amount)}</span>
+                </div>
+              )}
+
+              <div className="flex justify-between text-sm font-bold text-[#1A2B28] pt-2 border-t border-[#EAE5DC]">
+                <span>Total Booking Amount:</span>
+                <span>{fmtINR(financials.bookingTotal)}</span>
+              </div>
+
+              <div className="flex justify-between text-xs text-[#276749] font-semibold pt-1">
+                <span>Total Paid:</span>
+                <span>{fmtINR(financials.netPaid)}</span>
+              </div>
+
+              <div className="flex justify-between text-sm font-bold pt-2 border-t border-[#EAE5DC]">
+                <span className="text-[#1A2B28]">Amount Due:</span>
+                <span
+                  className={financials.amountDue > 0 ? 'text-[#C45532]' : 'text-[#276749]'}
+                >
+                  {fmtINR(financials.amountDue)}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Payment History Ledger */}
+          <div className="card p-6 bg-white border-[#D8D2C5] space-y-4">
+            <div className="flex items-center justify-between border-b border-[#EAE5DC] pb-3">
+              <div>
+                <h3 className="text-base font-semibold text-[#1A2B28]">Payment History</h3>
+                <p className="text-xs text-[#5C6E6B] mt-0.5">
+                  {payments.length} transaction(s) recorded for this stay
+                </p>
+              </div>
+
+              {financials.amountDue > 0 && (
+                <button
+                  onClick={() => setShowPayModal(true)}
+                  className="btn btn-outline text-xs flex items-center gap-1.5"
+                >
+                  <Plus size={13} />
+                  <span>Add Payment</span>
+                </button>
+              )}
+            </div>
+
+            {payments.length === 0 ? (
+              <div className="py-8 text-center text-xs text-[#5C6E6B]">
+                No payments have been recorded yet.
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead>
+                    <tr className="border-b border-[#EAE5DC] bg-[#FAF9F6] text-[#5C6E6B] font-semibold uppercase tracking-wider">
+                      <th className="py-2.5 px-3">Receipt No</th>
+                      <th className="py-2.5 px-3">Date</th>
+                      <th className="py-2.5 px-3">Method</th>
+                      <th className="py-2.5 px-3">Purpose</th>
+                      <th className="py-2.5 px-3 text-right">Amount</th>
+                      <th className="py-2.5 px-3 text-right">Document</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#EAE5DC]">
+                    {payments.map((p, idx) => (
+                      <tr key={p.id} className="hover:bg-[#FAF9F6] transition-colors">
+                        <td className="py-3 px-3 font-mono font-medium text-[#1A2B28]">
+                          {p.payment_no}
+                          {p.ref_id && (
+                            <div className="text-[10px] text-[#5C6E6B]">Ref: {p.ref_id}</div>
+                          )}
+                        </td>
+                        <td className="py-3 px-3 text-[#5C6E6B]">{fmtDate(p.date)}</td>
+                        <td className="py-3 px-3 text-[#1A2B28] font-medium">{p.method}</td>
+                        <td className="py-3 px-3 text-[#5C6E6B]">{p.purpose}</td>
+                        <td className="py-3 px-3 text-right font-bold text-[#1A2B28]">
+                          {fmtINR(p.amount)}
+                        </td>
+                        <td className="py-3 px-3 text-right">
+                          <button
+                            onClick={() => handleDownloadReceipt(p, idx)}
+                            className="text-xs font-semibold text-[#0D5C56] hover:underline inline-flex items-center gap-1"
+                          >
+                            <Download size={12} />
+                            <span>PDF</span>
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Right 1 Col: Documents & Guest Profile */}
+        <div className="space-y-6">
+          {/* Official Hospitality Documents */}
+          <div className="card p-5 bg-white border-[#D8D2C5] space-y-4">
+            <div className="border-b border-[#EAE5DC] pb-3">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-[#0D5C56]">
+                Guest Documents
+              </span>
+              <h3 className="text-base font-bold text-[#1A2B28] mt-0.5">Invoices & Receipts</h3>
+            </div>
+
+            <div className="space-y-3">
+              {/* Tax Invoice */}
+              <div className="p-3.5 rounded-xl bg-[#FAF9F6] border border-[#EAE5DC] space-y-2">
+                <div className="flex items-start justify-between">
+                  <div>
+                    <div className="font-semibold text-xs text-[#1A2B28] flex items-center gap-1.5">
+                      <FileText size={14} className="text-[#0D5C56]" />
+                      Tax Invoice
+                    </div>
+                    <div className="text-[11px] text-[#5C6E6B] mt-0.5">
+                      GST-compliant stay invoice
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 pt-1">
+                  <button
+                    onClick={handleDownloadInvoice}
+                    className="btn btn-primary text-xs flex-1 flex items-center justify-center gap-1.5 py-1.5"
+                  >
+                    <Download size={13} />
+                    <span>Download PDF</span>
+                  </button>
+                  <button
+                    onClick={() =>
+                      setSharingModal({
+                        open: true,
+                        channel: 'whatsapp',
+                        docName: `Tax Invoice INV-${booking.booking_no}`
+                      })
+                    }
+                    className="btn btn-outline text-xs p-1.5 bg-white"
+                    title="Share via WhatsApp"
+                  >
+                    <Share2 size={13} />
+                  </button>
+                </div>
+              </div>
+
+              {/* Guest Sharing Options */}
+              <div className="pt-2 text-xs text-[#5C6E6B] space-y-2">
+                <div className="font-semibold text-[#1A2B28]">Quick Share</div>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    onClick={() =>
+                      setSharingModal({
+                        open: true,
+                        channel: 'whatsapp',
+                        docName: `Booking Details ${booking.booking_no}`
+                      })
+                    }
+                    className="p-2 rounded-xl bg-[#FAF9F6] hover:bg-[#E8F3F1] border border-[#EAE5DC] text-[#1A2B28] flex items-center justify-center gap-1.5 transition-colors"
+                  >
+                    <Share2 size={13} className="text-[#276749]" />
+                    <span>WhatsApp</span>
+                  </button>
+                  <button
+                    onClick={() =>
+                      setSharingModal({
+                        open: true,
+                        channel: 'email',
+                        docName: `Stay Voucher ${booking.booking_no}`
+                      })
+                    }
+                    className="p-2 rounded-xl bg-[#FAF9F6] hover:bg-[#E8F3F1] border border-[#EAE5DC] text-[#1A2B28] flex items-center justify-center gap-1.5 transition-colors"
+                  >
+                    <Mail size={13} className="text-[#0D5C56]" />
+                    <span>Email</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Guest Communication & Digital Stay Portal */}
+          <div className="card p-5 bg-white border-[#D8D2C5] space-y-3.5">
+            <div className="border-b border-[#EAE5DC] pb-2.5 flex items-center justify-between">
+              <div>
+                <span className="text-[10px] font-bold uppercase tracking-wider text-[#0D5C56]">
+                  Guest Experience & Messaging
+                </span>
+                <h3 className="text-sm font-bold text-[#1A2B28] mt-0.5">Stay Portal & Direct Chat</h3>
+              </div>
+              <span className="w-2 h-2 rounded-full bg-[#276749] animate-pulse" />
+            </div>
+
+            <p className="text-xs text-[#5C6E6B] leading-normal">
+              Direct guest messaging, housekeeping service requests, Wi-Fi keys, and digital stay instructions.
+            </p>
+
+            <div className="space-y-2 pt-1">
+              <button
+                type="button"
+                onClick={() => navigate('/inbox')}
+                className="w-full py-2 px-3 rounded-xl bg-[#0D5C56] text-white hover:bg-[#094440] text-xs font-semibold flex items-center justify-center gap-2 transition-colors shadow-xs"
+              >
+                <MessageSquare size={14} />
+                <span>Message Guest in Inbox</span>
+              </button>
+
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const token =
+                      booking.id === 'b-arr-1'
+                        ? 'demo-rahul-valley-204'
+                        : booking.id === 'b-arr-2'
+                        ? 'demo-priya-heritage-104'
+                        : booking.id === 'b-arr-3'
+                        ? 'demo-neha-coral-2'
+                        : booking.id === 'b-stay-1'
+                        ? 'demo-rohan-heritage-202'
+                        : `stay-${booking.id}`;
+                    navigator.clipboard.writeText(`${window.location.origin}/stay/${token}`);
+                    toast.success('Stay Link Copied', 'Guest digital portal link copied to clipboard.');
+                  }}
+                  className="p-2 rounded-xl bg-[#FAF9F6] hover:bg-[#E8F3F1] border border-[#EAE5DC] text-[#1A2B28] text-xs font-medium flex items-center justify-center gap-1.5 transition-colors"
+                  title="Copy guest stay portal link to share with guest"
+                >
+                  <Copy size={13} className="text-[#0D5C56]" />
+                  <span>Copy Link</span>
+                </button>
+
+                <a
+                  href={`/stay/${
+                    booking.id === 'b-arr-1'
+                      ? 'demo-rahul-valley-204'
+                      : booking.id === 'b-arr-2'
+                      ? 'demo-priya-heritage-104'
+                      : booking.id === 'b-arr-3'
+                      ? 'demo-neha-coral-2'
+                      : booking.id === 'b-stay-1'
+                      ? 'demo-rohan-heritage-202'
+                      : `stay-${booking.id}`
+                  }`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="p-2 rounded-xl bg-[#FAF9F6] hover:bg-[#E8F3F1] border border-[#EAE5DC] text-[#1A2B28] text-xs font-medium flex items-center justify-center gap-1.5 transition-colors"
+                >
+                  <ExternalLink size={13} className="text-[#0D5C56]" />
+                  <span>Preview</span>
+                </a>
+              </div>
+            </div>
+          </div>
+
+          {/* Guest Profile Details */}
+          <div className="card p-5 bg-white border-[#D8D2C5] space-y-4">
+            <div className="border-b border-[#EAE5DC] pb-3 flex items-start justify-between">
+              <div>
+                <span className="text-[10px] font-bold uppercase tracking-wider text-[#0D5C56]">
+                  Guest Profile
+                </span>
+                <h3 className="text-base font-bold text-[#1A2B28] mt-0.5">
+                  <Link
+                    to={`/guests/${booking.customer_id}`}
+                    className="hover:text-[#0D5C56] hover:underline inline-flex items-center gap-1.5 transition-colors"
+                  >
+                    <span>{booking.customer?.name}</span>
+                    <ArrowRight size={13} className="text-[#0D5C56]" />
+                  </Link>
+                </h3>
+              </div>
+              <Link
+                to={`/guests/${booking.customer_id}`}
+                className="text-xs font-medium text-[#0D5C56] hover:underline"
+              >
+                View profile →
+              </Link>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div className="flex items-center gap-2 text-[#5C6E6B]">
+                <Phone size={14} className="text-[#0D5C56]" />
+                <span className="text-[#1A2B28] font-medium">
+                  {booking.customer?.phone || 'No phone recorded'}
+                </span>
+              </div>
+
+              {booking.customer?.email && (
+                <div className="flex items-center gap-2 text-[#5C6E6B]">
+                  <Mail size={14} className="text-[#0D5C56]" />
+                  <span className="text-[#1A2B28] font-medium">{booking.customer.email}</span>
+                </div>
+              )}
+
+              {booking.customer?.city && (
+                <div className="flex items-center gap-2 text-[#5C6E6B]">
+                  <Building2 size={14} className="text-[#0D5C56]" />
+                  <span className="text-[#1A2B28] font-medium">{booking.customer.city}</span>
+                </div>
+              )}
+
+              {booking.customer?.id_type && (
+                <div className="p-3 rounded-xl bg-[#FAF9F6] border border-[#EAE5DC] space-y-1">
+                  <div className="text-[11px] text-[#5C6E6B]">Government Identity Verification:</div>
+                  <div className="font-semibold text-[#1A2B28]">
+                    {booking.customer.id_type}: {booking.customer.id_number}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Add Payment Modal */}
+      {showPayModal && (
+        <AddPaymentModal
+          booking={booking}
+          balanceDue={financials.amountDue}
+          onClose={() => setShowPayModal(false)}
+          onSuccess={() => {
+            load();
+          }}
+        />
+      )}
+
+      {/* Demo Sharing Confirmation Dialog */}
+      {sharingModal.open && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-stone-900/40 backdrop-blur-xs"
+          onClick={() => setSharingModal({ ...sharingModal, open: false })}
+        >
+          <div
+            className="w-full max-w-sm bg-white rounded-2xl shadow-2xl border border-[#D8D2C5] p-6 space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-2.5">
+              <div className="w-10 h-10 rounded-xl bg-[#E8F3F1] text-[#0D5C56] flex items-center justify-center">
+                <Share2 size={20} />
+              </div>
+              <div>
+                <h3 className="font-bold text-base text-[#1A2B28]">
+                  Share via {sharingModal.channel === 'whatsapp' ? 'WhatsApp' : 'Email'}
+                </h3>
+                <p className="text-xs text-[#5C6E6B]">{sharingModal.docName}</p>
+              </div>
+            </div>
+
+            <p className="text-xs text-[#1A2B28] bg-[#FAF9F6] p-3 rounded-xl border border-[#EAE5DC]">
+              {sharingModal.channel === 'whatsapp'
+                ? `Guest voucher link will be sent to WhatsApp number: ${
+                    booking.customer?.phone || '+91 98765 43210'
+                  }`
+                : `Invoice document will be emailed to: ${
+                    booking.customer?.email || 'guest@example.com'
+                  }`}
+            </p>
+
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                onClick={() => setSharingModal({ ...sharingModal, open: false })}
+                className="btn btn-outline text-xs"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  toast.success(
+                    'Shared Successfully',
+                    `Document sent to ${booking.customer?.name} via ${sharingModal.channel}.`
+                  );
+                  setSharingModal({ ...sharingModal, open: false });
+                }}
+                className="btn btn-primary text-xs"
+              >
+                Confirm Send
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
